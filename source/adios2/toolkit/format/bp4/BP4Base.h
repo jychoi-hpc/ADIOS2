@@ -28,8 +28,8 @@
 #include "adios2/core/Engine.h"
 #include "adios2/core/VariableBase.h"
 #include "adios2/toolkit/aggregator/mpi/MPIChain.h"
-#include "adios2/toolkit/format/BufferSTL.h"
 #include "adios2/toolkit/format/bpOperation/BPOperation.h"
+#include "adios2/toolkit/format/buffer/heap/BufferSTL.h"
 #include "adios2/toolkit/profiling/iochrono/IOChrono.h"
 
 namespace adios2
@@ -68,6 +68,14 @@ public:
         /* the variable index will not be copied to the */
         /* metatdata buffer when "endstep" of current step is called */
         bool Valid = false;
+
+        /* record the time step of previous block of each variable*/
+        /* used to decide whether we should create a new header of the variable
+         * index */
+        /* or not. if it's a new step, we create a new header. otherwise, we
+         * don't */
+        uint32_t CurrentStep = 0;
+        size_t currentHeaderPosition = 0;
 
         SerialElementIndex(const uint32_t memberID,
                            const size_t bufferSize = 200)
@@ -150,8 +158,18 @@ public:
     int m_SizeMPI = 1;   ///< current MPI processes size
     int m_Processes = 1; ///< number of aggregated MPI processes
 
-    /** statistics verbosity, only 0 is supported */
-    unsigned int m_StatsLevel = 0;
+    /** statistics verbosity, only 0/1 is supported now */
+    unsigned int m_StatsLevel = 1;
+    /** sub-block size for min/max calculation of large arrays
+     * in number of elements (not bytes)
+     * The default big number per Put() default will result in the original
+     * single min/max value-pair per block
+     */
+    size_t m_StatsBlockSize = 1125899906842624;
+
+    /** async threads for background tasks, default = 1, 0 means all serial
+     * operations */
+    unsigned int m_AsyncThreads = 1;
 
     /** contains data buffer for this rank */
     BufferSTL m_Data;
@@ -159,11 +177,27 @@ public:
     /** contains collective metadata buffer, only used by rank 0 */
     BufferSTL m_Metadata;
 
+    /* metadata index table*/
+    std::unordered_map<uint64_t,
+                       std::unordered_map<uint64_t, std::vector<uint64_t>>>
+        m_MetadataIndexTable;
+
+    /* memory buffer for serialized metadata index table*/
+    BufferSTL m_MetadataIndex;
+
     /** memory growth factor,s set by the user */
     float m_GrowthFactor = DefaultBufferGrowthFactor;
 
     /** max buffer size, set by the user */
     size_t m_MaxBufferSize = DefaultMaxBufferSize;
+
+    /** Timeout for Open in read. Set by the user as parameter */
+    float m_OpenTimeoutSecs = 0.0;
+
+    /** Timeout for BeginStep in read. Set by the user as parameter
+     * default value is calculated from the timeout value  */
+    float m_BeginStepPollingFrequencySecs = 1.0;
+    bool m_BeginStepPollingFrequencyIsSet = false;
 
     /** contains bp1 format metadata indices*/
     MetadataSet m_MetadataSet;
@@ -233,6 +267,12 @@ public:
     virtual ~BP4Base();
 
     void InitParameters(const Params &parameters);
+
+    /** A BP4 dataset is a directory. Remove first the trailing \ from
+     * the name if present. Makes it easier to append all file names
+     * to it later.
+     */
+    std::string RemoveTrailingSlash(const std::string &name) const noexcept;
 
     /**
      * Vector version of BPBaseNames
@@ -320,6 +360,16 @@ protected:
     /** might be used in large payload copies to buffer */
     unsigned int m_Threads = 1;
     const bool m_DebugMode = false;
+
+    /* The position of the length of the serialized variable (metadata + data
+     * length) in the output data buffer (m_Data). This position must be passed
+     * between PutVariableMetadata() and PutVariablePayload() of the serializer
+     * to correctly record the length of the serialized length. The length
+     * depends on whether an operation is applied at buffering in
+     * PutVariablePayload(). This is a temporary, short lived value between the
+     * calls of those functions, call from an engine.
+     */
+    size_t m_LastVarLengthPosInBuffer = 0;
 
     /** method type for file I/O */
     enum IO_METHOD
@@ -412,12 +462,13 @@ protected:
         characteristic_offset = 3,     //!< characteristic_offset
         characteristic_dimensions = 4, //!< characteristic_dimensions
         characteristic_var_id = 5,     //!< characteristic_var_id
-        characteristic_payload_offset = 6, //!< characteristic_payload_offset
-        characteristic_file_index = 7,     //!< characteristic_file_index
-        characteristic_time_index = 8,     //!< characteristic_time_index
-        characteristic_bitmap = 9,         //!< characteristic_bitmap
-        characteristic_stat = 10,          //!< characteristic_stat
-        characteristic_transform_type = 11 //!< characteristic_transform_type
+        characteristic_payload_offset = 6,  //!< characteristic_payload_offset
+        characteristic_file_index = 7,      //!< characteristic_file_index
+        characteristic_time_index = 8,      //!< characteristic_time_index
+        characteristic_bitmap = 9,          //!< characteristic_bitmap
+        characteristic_stat = 10,           //!< characteristic_stat
+        characteristic_transform_type = 11, //!< characteristic_transform_type
+        characteristic_minmax = 12          //!< min-max array for subblocks
     };
 
     /** Define statistics type for characteristic ID = 10 in bp1 format */
@@ -498,6 +549,8 @@ protected:
         uint64_t PayloadOffset = 0;
         T Min;
         T Max;
+        std::vector<T> MinMaxs; // sub-block level min-max
+        struct helper::BlockDivisionInfo SubblockInfo;
         T Value;
         std::vector<T> Values;
         uint32_t Step = 0;
@@ -565,8 +618,11 @@ protected:
     /** Set available number of threads for vector operations */
     void InitParameterThreads(const std::string value);
 
+    /** Set available number of threads for vector operations */
+    void InitParameterAsyncThreads(const std::string value);
+
     /** verbose file level=0 (default), not active yet */
-    void InitParameterStatLevel(const std::string value);
+    void InitParameterStatsLevel(const std::string value);
 
     /** verbose file level=0 (default) */
     void InitParameterCollectiveMetadata(const std::string value);
@@ -580,6 +636,25 @@ protected:
     /** Sets if IO is node-local so each rank creates its own IO directory and
      * stream */
     void InitParameterNodeLocal(const std::string value);
+
+    /** set timeout for Open (for Read), Reader will blocking wait for the file
+     * to appear within the timeout.
+     * Parameter should be a floating point number indicating time in seconds.
+     * Default is 0.0 (no wait) */
+    void InitParameterOpenTimeoutSecs(const std::string value);
+
+    /* parse a value for float parameters, including
+     * OpenTimeoutSecs,
+     * BeginStepPollingFrequencySecs
+     */
+    float InitParameterFloat(const std::string value,
+                             const std::string parameterName);
+
+    /* parse a value for non-negative integer parameters, including
+     * StatsBlockSizeBytes
+     */
+    size_t InitParameterSizeT(const std::string value,
+                              const std::string parameterName);
 
     std::vector<uint8_t>
     GetTransportIDs(const std::vector<std::string> &transportsTypes) const

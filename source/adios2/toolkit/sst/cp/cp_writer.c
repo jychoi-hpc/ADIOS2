@@ -1244,6 +1244,14 @@ static void CP_PeerFailCloseWSReader(WS_ReaderInfo CP_WSR_Stream,
         DerefAllSentTimesteps(CP_WSR_Stream->ParentStream, CP_WSR_Stream);
         CP_WSR_Stream->OldestUnreleasedTimestep =
             CP_WSR_Stream->LastSentTimestep + 1;
+        for (int i = 0; i < CP_WSR_Stream->ReaderCohortSize; i++)
+        {
+            if (CP_WSR_Stream->Connections[i].CMconn)
+            {
+                CMConnection_close(CP_WSR_Stream->Connections[i].CMconn);
+                CP_WSR_Stream->Connections[i].CMconn = NULL;
+            }
+        }
     }
     if (NewState == PeerFailed)
     {
@@ -1436,10 +1444,11 @@ static FFSFormatList AddUniqueFormats(FFSFormatList List,
     return Candidates;
 }
 
-static void FillMetadataMsg(SstStream Stream, struct _TimestepMetadataMsg *Msg,
-                            MetadataPlusDPInfo *pointers)
+static void *FillMetadataMsg(SstStream Stream, struct _TimestepMetadataMsg *Msg,
+                             MetadataPlusDPInfo *pointers)
 {
     FFSFormatList XmitFormats = NULL;
+    void *MetadataFreeValue = NULL;
 
     /* build the Metadata Msg */
     Msg->CohortSize = Stream->CohortSize;
@@ -1483,6 +1492,21 @@ static void FillMetadataMsg(SstStream Stream, struct _TimestepMetadataMsg *Msg,
         Msg->DP_TimestepInfo = NULL;
     }
 
+    if (Stream->AssembleMetadataUpcall)
+    {
+        MetadataFreeValue = Stream->AssembleMetadataUpcall(
+            Stream->UpcallWriter, Stream->CohortSize, Msg->Metadata,
+            Msg->AttributeData);
+        /* Assume rank 0 values alone are useful now, zero others */
+        for (int i = 1; i < Stream->CohortSize; i++)
+        {
+            Msg->Metadata[i].DataSize = 0;
+            Msg->Metadata[i].block = NULL;
+            Msg->AttributeData[i].DataSize = 0;
+            Msg->AttributeData[i].block = NULL;
+        }
+    }
+
     free(pointers);
 
     Stream->PreviousFormats =
@@ -1502,6 +1526,7 @@ static void FillMetadataMsg(SstStream Stream, struct _TimestepMetadataMsg *Msg,
     {
         Msg->Formats = XmitFormats;
     }
+    return MetadataFreeValue;
 }
 
 static void ProcessReaderStatusList(SstStream Stream,
@@ -1806,6 +1831,7 @@ extern void SstInternalProvideTimestep(
         int DiscardThisTimestep = 0;
         struct _ReturnMetadataInfo TimestepMetaData;
         RequestQueue ArrivingReader = Stream->ReadRequestQueue;
+        void *MetadataFreeValue;
         PTHREAD_MUTEX_LOCK(&Stream->DataLock);
         QueueMaintenance(Stream);
         if (Stream->QueueFullPolicy == SstQueueFullDiscard)
@@ -1852,11 +1878,17 @@ extern void SstInternalProvideTimestep(
         Stream->ReleaseList = NULL;
         Stream->LockDefnsCount = 0;
         Stream->LockDefnsList = NULL;
-        FillMetadataMsg(Stream, &TimestepMetaData.Msg, pointers);
+        MetadataFreeValue =
+            FillMetadataMsg(Stream, &TimestepMetaData.Msg, pointers);
         PTHREAD_MUTEX_UNLOCK(&Stream->DataLock);
         ReturnData = CP_distributeDataFromRankZero(
             Stream, &TimestepMetaData, Stream->CPInfo->ReturnMetadataInfoFormat,
             &data_block2);
+        if (Stream->FreeMetadataUpcall)
+        {
+            Stream->FreeMetadataUpcall(Stream->UpcallWriter, Msg->Metadata,
+                                       Msg->AttributeData, MetadataFreeValue);
+        }
         free(TimestepMetaData.ReleaseList);
         free(TimestepMetaData.ReaderStatus);
         free(TimestepMetaData.LockDefnsList);
@@ -2175,4 +2207,13 @@ extern void CP_LockReaderDefinitionsHandler(CManager cm, CMConnection conn,
     }
     PTHREAD_MUTEX_UNLOCK(&ParentStream->DataLock);
     TAU_STOP_FUNC();
+}
+
+void SstWriterInitMetadataCallback(SstStream Stream, void *Writer,
+                                   AssembleMetadataUpcallFunc AssembleCallback,
+                                   FreeMetadataUpcallFunc FreeCallback)
+{
+    Stream->AssembleMetadataUpcall = AssembleCallback;
+    Stream->FreeMetadataUpcall = FreeCallback;
+    Stream->UpcallWriter = Writer;
 }

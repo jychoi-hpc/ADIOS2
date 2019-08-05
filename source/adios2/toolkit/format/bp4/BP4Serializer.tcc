@@ -14,6 +14,7 @@
 #include "BP4Serializer.h"
 
 #include <algorithm> // std::all_of
+#include <iostream>
 
 #include "adios2/helper/adiosFunctions.h"
 
@@ -58,7 +59,8 @@ inline void BP4Serializer::PutVariableMetadata(
 
     /*const size_t startingPos = m_Data.m_Position;*/
     lf_SetOffset(stats.Offset);
-    PutVariableMetadataInData(variable, blockInfo, stats);
+    m_LastVarLengthPosInBuffer =
+        PutVariableMetadataInData(variable, blockInfo, stats);
     lf_SetOffset(stats.PayloadOffset);
 
     /*
@@ -86,7 +88,6 @@ inline void BP4Serializer::PutVariablePayload(
     const bool sourceRowMajor) noexcept
 {
     ProfilerStart("buffering");
-    const size_t startingPos = m_Data.m_Position;
     if (blockInfo.Operations.empty())
     {
         PutPayloadInBuffer(variable, blockInfo, sourceRowMajor);
@@ -95,6 +96,14 @@ inline void BP4Serializer::PutVariablePayload(
     {
         PutOperationPayloadInBuffer(variable, blockInfo);
     }
+
+    /* Now we can update the varLength including payload size including the
+     * closing padding but NOT the opening [VMD
+     */
+    const uint64_t varLength =
+        static_cast<uint64_t>(m_Data.m_Position - m_LastVarLengthPosInBuffer);
+    size_t backPosition = m_LastVarLengthPosInBuffer;
+    helper::CopyToBuffer(m_Data.m_Buffer, backPosition, &varLength);
 
     /*std::cout << " -- Var payload name=" << variable.m_Name
               << " startPos = " << std::to_string(startingPos)
@@ -324,7 +333,8 @@ void BP4Serializer::PutAttributeInIndex(const core::Attribute<T> &attribute,
     SerialElementIndex index(stats.MemberID);
     auto &buffer = index.Buffer;
 
-    index.Valid = true; // when the attribute is put, set this flag to true
+    // index.Valid = true; // when the attribute is put, set this flag to true
+    size_t indexLengthPosition = buffer.size();
 
     buffer.insert(buffer.end(), 4, '\0'); // skip attribute length (4)
     helper::InsertToBuffer(buffer, &stats.MemberID);
@@ -392,6 +402,10 @@ void BP4Serializer::PutAttributeInIndex(const core::Attribute<T> &attribute,
                          &characteristicsLength); // length
 
     // Remember this attribute and its serialized piece
+    const uint32_t indexLength =
+        static_cast<uint32_t>(buffer.size() - indexLengthPosition - 4);
+
+    helper::CopyToBuffer(buffer, indexLengthPosition, &indexLength);
     m_MetadataSet.AttributesIndices.emplace(attribute.m_Name, index);
     m_SerializedAttributes.emplace(attribute.m_Name);
 }
@@ -426,21 +440,24 @@ BP4Serializer::GetBPStats(const bool singleValue,
         return stats;
     }
 
-    if (m_StatsLevel == 0)
+    if (m_StatsLevel > 0)
     {
         ProfilerStart("minmax");
-        if (blockInfo.MemoryStart.empty())
+        if (!blockInfo.MemoryStart.empty())
         {
-            const std::size_t valuesSize =
-                helper::GetTotalSize(blockInfo.Count);
-            helper::GetMinMaxThreads(blockInfo.Data, valuesSize, stats.Min,
-                                     stats.Max, m_Threads);
-        }
-        else // non-contiguous memory min/max
-        {
+            // non-contiguous memory min/max
             helper::GetMinMaxSelection(blockInfo.Data, blockInfo.MemoryCount,
                                        blockInfo.MemoryStart, blockInfo.Count,
                                        isRowMajor, stats.Min, stats.Max);
+        }
+        else
+        {
+            stats.SubblockInfo =
+                helper::DivideBlock(blockInfo.Count, m_StatsBlockSize,
+                                    helper::BlockDivisionMethod::Contiguous);
+            helper::GetMinMaxSubblocks(blockInfo.Data, blockInfo.Count,
+                                       stats.SubblockInfo, stats.MinMaxs,
+                                       stats.Min, stats.Max, m_Threads);
         }
         ProfilerStop("minmax");
     }
@@ -449,7 +466,7 @@ BP4Serializer::GetBPStats(const bool singleValue,
 }
 
 template <class T>
-void BP4Serializer::PutVariableMetadataInData(
+size_t BP4Serializer::PutVariableMetadataInData(
     const core::Variable<T> &variable,
     const typename core::Variable<T>::Info &blockInfo,
     const Stats<T> &stats) noexcept
@@ -518,6 +535,7 @@ void BP4Serializer::PutVariableMetadataInData(
     helper::CopyToBuffer(buffer, position, &vmdEndLen, 1);
     helper::CopyToBuffer(buffer, position, ptr, vmdEndLen);
 
+    /*
     // Back to varLength including payload size
     // including the closing padding but NOT the opening [VMD
     const uint64_t varLength = static_cast<uint64_t>(
@@ -526,12 +544,14 @@ void BP4Serializer::PutVariableMetadataInData(
 
     size_t backPosition = varLengthPosition;
     helper::CopyToBuffer(buffer, backPosition, &varLength);
+    */
 
     absolutePosition += position - mdBeginPosition;
+    return varLengthPosition;
 }
 
 template <>
-inline void BP4Serializer::PutVariableMetadataInData(
+inline size_t BP4Serializer::PutVariableMetadataInData(
     const core::Variable<std::string> &variable,
     const typename core::Variable<std::string>::Info &blockInfo,
     const Stats<std::string> &stats) noexcept
@@ -577,6 +597,7 @@ inline void BP4Serializer::PutVariableMetadataInData(
     const char vmdend[] = "\4VMD]"; // no \0
     helper::CopyToBuffer(buffer, position, vmdend, sizeof(vmdend) - 1);
 
+    /*
     // Back to varLength including payload size
     // including the closing padding but NOT the opening [VMD
     const uint64_t varLength = static_cast<uint64_t>(
@@ -585,8 +606,10 @@ inline void BP4Serializer::PutVariableMetadataInData(
 
     size_t backPosition = varLengthPosition;
     helper::CopyToBuffer(buffer, backPosition, &varLength);
+    */
 
     absolutePosition += position - mdBeginPosition;
+    return varLengthPosition;
 }
 
 template <class T>
@@ -597,8 +620,12 @@ void BP4Serializer::PutVariableMetadataInIndex(
 {
     auto &buffer = index.Buffer;
 
-    if (isNew) // write variable header
+    if (index.CurrentStep !=
+        stats.Step) // create a new variable header for a new step
     {
+        size_t indexLengthPosition = buffer.size();
+        index.currentHeaderPosition = buffer.size();
+
         buffer.insert(buffer.end(), 4, '\0'); // skip var length (4)
         helper::InsertToBuffer(buffer, &stats.MemberID);
         buffer.insert(buffer.end(), 2, '\0'); // skip group name
@@ -614,19 +641,63 @@ void BP4Serializer::PutVariableMetadataInIndex(
 
         // For updating absolute offsets in agreggation
         index.LastUpdatedPosition = buffer.size();
+
+        PutVariableCharacteristics(variable, blockInfo, stats, buffer);
+        const uint32_t indexLength =
+            static_cast<uint32_t>(buffer.size() - indexLengthPosition - 4);
+
+        helper::CopyToBuffer(buffer, indexLengthPosition, &indexLength);
+
+        index.CurrentStep = stats.Step;
     }
-    else // update characteristics sets count
+    else // update characteristics sets length and count
     {
-        if (m_StatsLevel == 0)
-        {
-            ++index.Count;
-            // fixed since group and path are not printed
-            size_t setsCountPosition = 15 + variable.m_Name.size();
-            helper::CopyToBuffer(buffer, setsCountPosition, &index.Count);
-        }
+        size_t currentIndexStartPosition = buffer.size();
+        PutVariableCharacteristics(variable, blockInfo, stats, buffer);
+        uint32_t currentIndexLength =
+            static_cast<uint32_t>(buffer.size() - currentIndexStartPosition);
+
+        size_t localPosition = index.currentHeaderPosition;
+        uint32_t preIndexLength = helper::ReadValue<uint32_t>(
+            buffer, localPosition, helper::IsLittleEndian());
+
+        uint32_t newIndexLength = preIndexLength + currentIndexLength;
+
+        localPosition =
+            index.currentHeaderPosition; // back to beginning of the header
+        helper::CopyToBuffer(buffer, localPosition, &newIndexLength);
+
+        ++index.Count;
+        // fixed since group and path are not printed
+        size_t setsCountPosition =
+            index.currentHeaderPosition + 15 + variable.m_Name.size();
+        helper::CopyToBuffer(buffer, setsCountPosition, &index.Count);
     }
 
-    PutVariableCharacteristics(variable, blockInfo, stats, buffer);
+    // always write variable header
+    // size_t indexLengthPosition = buffer.size();
+    // buffer.insert(buffer.end(), 4, '\0'); // skip var length (4)
+    // helper::InsertToBuffer(buffer, &stats.MemberID);
+    // buffer.insert(buffer.end(), 2, '\0'); // skip group name
+    // PutNameRecord(variable.m_Name, buffer);
+    // buffer.insert(buffer.end(), 2, '\0'); // skip path
+
+    // const uint8_t dataType = TypeTraits<T>::type_enum;
+    // helper::InsertToBuffer(buffer, &dataType);
+
+    // // Characteristics Sets Count in Metadata
+    // index.Count = 1;
+    // helper::InsertToBuffer(buffer, &index.Count);
+
+    // // For updating absolute offsets in agreggation
+    // index.LastUpdatedPosition = buffer.size();
+
+    // PutVariableCharacteristics(variable, blockInfo, stats, buffer);
+    // const uint32_t indexLength = static_cast<uint32_t>(
+    //     buffer.size() - indexLengthPosition - 4);
+
+    // helper::CopyToBuffer(buffer, indexLengthPosition,
+    //                      &indexLength);
 }
 
 template <class T>
@@ -642,13 +713,41 @@ void BP4Serializer::PutBoundsRecord(const bool singleValue,
     }
     else
     {
-        if (m_StatsLevel == 0) // default verbose
+        if (m_StatsLevel > 0) // default verbose
         {
-            PutCharacteristicRecord(characteristic_min, characteristicsCounter,
-                                    stats.Min, buffer);
+            // Record entire Min-Max subblock arrays
+            const uint8_t id = characteristic_minmax;
+            uint16_t M = static_cast<uint16_t>(stats.MinMaxs.size() / 2);
+            if (M == 0)
+            {
+                M = 1;
+            }
+            helper::InsertToBuffer(buffer, &id);
+            helper::InsertToBuffer(buffer, &M);
+            helper::InsertToBuffer(buffer, &stats.Min);
+            helper::InsertToBuffer(buffer, &stats.Max);
 
-            PutCharacteristicRecord(characteristic_max, characteristicsCounter,
-                                    stats.Max, buffer);
+            if (M > 1)
+            {
+                uint8_t method =
+                    static_cast<uint8_t>(stats.SubblockInfo.divisionMethod);
+                helper::InsertToBuffer(buffer, &method);
+                helper::InsertToBuffer(buffer,
+                                       &stats.SubblockInfo.subblockSize);
+
+                const uint16_t N =
+                    static_cast<uint16_t>(stats.SubblockInfo.div.size());
+                for (auto const d : stats.SubblockInfo.div)
+                {
+                    helper::InsertToBuffer(buffer, &d);
+                }
+                // insert min+max (alternating) elements (2*M values)
+                for (auto const m : stats.MinMaxs)
+                {
+                    helper::InsertToBuffer(buffer, &m);
+                }
+            }
+            ++characteristicsCounter;
         }
     }
 }
@@ -667,13 +766,41 @@ void BP4Serializer::PutBoundsRecord(const bool singleValue,
     }
     else
     {
-        if (m_StatsLevel == 0) // default min and max only
+        if (m_StatsLevel > 0) // default min and max only
         {
-            PutCharacteristicRecord(characteristic_min, characteristicsCounter,
-                                    stats.Min, buffer, position);
+            // Record entire Min-Max subblock arrays
+            const uint8_t id = characteristic_minmax;
+            uint16_t M = static_cast<uint16_t>(stats.MinMaxs.size() / 2);
+            if (M == 0)
+            {
+                M = 1;
+            }
+            helper::CopyToBuffer(buffer, position, &id);
+            helper::CopyToBuffer(buffer, position, &M);
+            helper::CopyToBuffer(buffer, position, &stats.Min);
+            helper::CopyToBuffer(buffer, position, &stats.Max);
 
-            PutCharacteristicRecord(characteristic_max, characteristicsCounter,
-                                    stats.Max, buffer, position);
+            if (M > 1)
+            {
+                uint8_t method =
+                    static_cast<uint8_t>(stats.SubblockInfo.divisionMethod);
+                helper::CopyToBuffer(buffer, position, &method);
+                helper::CopyToBuffer(buffer, position,
+                                     &stats.SubblockInfo.subblockSize);
+
+                const uint16_t N =
+                    static_cast<uint16_t>(stats.SubblockInfo.div.size());
+                for (auto const d : stats.SubblockInfo.div)
+                {
+                    helper::CopyToBuffer(buffer, position, &d);
+                }
+                // insert min+max (alternating) elements (2*M values)
+                for (auto const m : stats.MinMaxs)
+                {
+                    helper::CopyToBuffer(buffer, position, &m);
+                }
+            }
+            ++characteristicsCounter;
         }
     }
 }
@@ -776,12 +903,6 @@ void BP4Serializer::PutVariableCharacteristics(
     PutCharacteristicRecord(characteristic_file_index, characteristicsCounter,
                             stats.FileIndex, buffer);
 
-    if (blockInfo.Data != nullptr)
-    {
-        PutBoundsRecord(variable.m_SingleValue, stats, characteristicsCounter,
-                        buffer);
-    }
-
     uint8_t characteristicID = characteristic_dimensions;
     helper::InsertToBuffer(buffer, &characteristicID);
     const uint8_t dimensions = static_cast<uint8_t>(blockInfo.Count.size());
@@ -791,6 +912,14 @@ void BP4Serializer::PutVariableCharacteristics(
     PutDimensionsRecord(blockInfo.Count, blockInfo.Shape, blockInfo.Start,
                         buffer);
     ++characteristicsCounter;
+
+    if (blockInfo.Data != nullptr)
+    {
+        // minmax array depends on number of dimensions so this must
+        // come after dimensions characteristics
+        PutBoundsRecord(variable.m_SingleValue, stats, characteristicsCounter,
+                        buffer);
+    }
 
     PutCharacteristicRecord(characteristic_offset, characteristicsCounter,
                             stats.Offset, buffer);
@@ -913,6 +1042,8 @@ void BP4Serializer::UpdateIndexOffsetsCharacteristics(size_t &currentPosition,
     const size_t endPosition =
         currentPosition + static_cast<size_t>(characteristicsLength);
 
+    size_t dimensionsSize = 0; // get it from dimensions characteristics
+
     while (currentPosition < endPosition)
     {
         const uint8_t id = helper::ReadValue<uint8_t>(buffer, currentPosition);
@@ -960,6 +1091,21 @@ void BP4Serializer::UpdateIndexOffsetsCharacteristics(size_t &currentPosition,
             currentPosition += sizeof(T);
             break;
         }
+        case (characteristic_minmax):
+        {
+            // first get the number of subblocks
+            const uint16_t M =
+                helper::ReadValue<uint16_t>(buffer, currentPosition);
+            currentPosition += 2 * sizeof(T); // block min/max
+            if (M > 1)
+            {
+                currentPosition += 1 + 4; // method, blockSize
+                currentPosition +=
+                    dimensionsSize * sizeof(uint16_t); // N-dim division
+                currentPosition += 2 * M * sizeof(T);  // M * min/max
+            }
+            break;
+        }
         case (characteristic_offset):
         {
             const uint64_t currentOffset =
@@ -989,7 +1135,7 @@ void BP4Serializer::UpdateIndexOffsetsCharacteristics(size_t &currentPosition,
         }
         case (characteristic_dimensions):
         {
-            const size_t dimensionsSize = static_cast<size_t>(
+            dimensionsSize = static_cast<size_t>(
                 helper::ReadValue<uint8_t>(buffer, currentPosition));
 
             currentPosition +=

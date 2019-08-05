@@ -13,10 +13,10 @@ if(ADIOS2_HAVE_MPI)
     target_link_libraries(TestStagingMPMD adios2 gtest_interface MPI::MPI_C)
     if(ADIOS2_HAVE_SST)
         gtest_add_tests(TARGET TestStagingMPMD ${extra_test_args} 
-        		EXTRA_ARGS "SST" "MarshalMethod:FFS"
+        		EXTRA_ARGS "SST" "MarshalMethod=FFS"
 			TEST_SUFFIX _SST_FFS)
 	gtest_add_tests(TARGET TestStagingMPMD ${extra_test_args} 
-        	        EXTRA_ARGS "SST" "MarshalMethod:BP"
+        	        EXTRA_ARGS "SST" "MarshalMethod=BP"
                 	TEST_SUFFIX _SST_BP)
     endif()
 
@@ -31,6 +31,7 @@ add_executable(TestCommonWriteModes TestCommonWriteModes.cpp)
 add_executable(TestCommonWriteLocal TestCommonWriteLocal.cpp)
 add_executable(TestCommonWriteShared TestCommonWriteShared.cpp)
 add_executable(TestCommonRead TestCommonRead.cpp)
+add_executable(TestCommonReadR64 TestCommonReadR64.cpp)
 add_executable(TestCommonReadAttrs TestCommonReadAttrs.cpp)
 add_executable(TestCommonReadLocal TestCommonReadLocal.cpp)
 add_executable(TestCommonReadShared TestCommonReadShared.cpp)
@@ -53,6 +54,7 @@ if(SST_INCLUDE_DIRS)
   target_include_directories(TestCommonWriteLocal PRIVATE ${SST_INCLUDE_DIRS})
   target_include_directories(TestCommonWriteShared PRIVATE ${SST_INCLUDE_DIRS})
   target_include_directories(TestCommonRead PRIVATE ${SST_INCLUDE_DIRS})
+  target_include_directories(TestCommonReadR64 PRIVATE ${SST_INCLUDE_DIRS})
   target_include_directories(TestCommonReadLocal PRIVATE ${SST_INCLUDE_DIRS})
   target_include_directories(TestCommonReadShared PRIVATE ${SST_INCLUDE_DIRS})
   target_include_directories(TestCommonServer PRIVATE ${SST_INCLUDE_DIRS})
@@ -64,6 +66,7 @@ target_link_libraries(TestCommonWriteAttrs adios2 gtest_interface ${Sst_LIBRARY}
 target_link_libraries(TestCommonWriteLocal adios2 gtest_interface ${Sst_LIBRARY})
 target_link_libraries(TestCommonWriteShared adios2 gtest_interface ${Sst_LIBRARY})
 target_link_libraries(TestCommonRead adios2 gtest_interface ${Sst_LIBRARY})
+target_link_libraries(TestCommonReadR64 adios2 gtest_interface ${Sst_LIBRARY})
 target_link_libraries(TestCommonReadLocal adios2 gtest_interface ${Sst_LIBRARY})
 target_link_libraries(TestCommonReadShared adios2 gtest_interface ${Sst_LIBRARY})
 target_link_libraries(TestCommonReadAttrs adios2 gtest_interface ${Sst_LIBRARY})
@@ -77,6 +80,7 @@ if(ADIOS2_HAVE_MPI)
   target_link_libraries(TestCommonWriteLocal MPI::MPI_C)
   target_link_libraries(TestCommonWriteShared MPI::MPI_C)
   target_link_libraries(TestCommonRead MPI::MPI_C)
+  target_link_libraries(TestCommonReadR64 MPI::MPI_C)
   target_link_libraries(TestCommonReadLocal MPI::MPI_C)
   target_link_libraries(TestCommonReadShared MPI::MPI_C)
   target_link_libraries(TestCommonReadAttrs MPI::MPI_C)
@@ -132,7 +136,7 @@ endif()
 set (SIMPLE_MPI_TESTS "")
 set (SIMPLE_MPI_FORTRAN_TESTS "")
 if (ADIOS2_HAVE_MPI)
-  set (SIMPLE_MPI_TESTS "2x1;1x2;3x5;5x3;DelayedReader_3x5;2x1.Local;1x2.Local;3x5.Local;5x3.Local")
+  set (SIMPLE_MPI_TESTS "2x1;1x2;3x5;5x3;DelayedReader_3x5;2x1.Local;1x2.Local;3x5.Local;5x3.Local;2x1ZeroDataVar;2x1ZeroDataR64")
   if (ADIOS_HAVE_Fortran)
     set (SIMPLE_MPI_FORTRAN_TESTS "FtoC.3x5;CtoF.3x5;FtoF.3x5")
   endif()
@@ -156,19 +160,17 @@ endif()
 
 
 #  For the moment, only test the default comm pattern (Peer)
-MutateTestSet( COMM_MIN_SST_TESTS "CommMin" "CPCommPattern:Min" "${BASIC_SST_TESTS}" )
-MutateTestSet( COMM_PEER_SST_TESTS "CommPeer" "CPCommPattern:Min" "${BASIC_SST_TESTS}" )
+MutateTestSet( COMM_MIN_SST_TESTS "CommMin" writer "CPCommPattern=Min" "${BASIC_SST_TESTS}" )
+MutateTestSet( COMM_PEER_SST_TESTS "CommPeer" writer "CPCommPattern=Min" "${BASIC_SST_TESTS}" )
 
-MutateTestSet( FFS_SST_TESTS "FFS" "MarshalMethod:FFS" "${COMM_MIN_SST_TESTS};${COMM_PEER_SST_TESTS}" )
-MutateTestSet( BP_SST_TESTS "BP" "MarshalMethod:BP" "${COMM_MIN_SST_TESTS};${COMM_PEER_SST_TESTS}" )
+MutateTestSet( FFS_SST_TESTS "FFS" writer "MarshalMethod=FFS" "${COMM_MIN_SST_TESTS};${COMM_PEER_SST_TESTS}" )
+MutateTestSet( BP_SST_TESTS "BP" writer "MarshalMethod=BP" "${COMM_MIN_SST_TESTS};${COMM_PEER_SST_TESTS}" )
 
 set (SST_TESTS "")
 LIST (APPEND SST_TESTS ${FFS_SST_TESTS} ${BP_SST_TESTS})
 
-# remove Fto anything tests that use FFS because we can't spec it
-list(FILTER SST_TESTS EXCLUDE REGEX "Fto.*FFS.*")
-# remove Fto anything tests that use CommMin because we can't spec it
-list(FILTER SST_TESTS EXCLUDE REGEX "Fto.*CommMin.*")
+# Zero Data tests are unreliable with SST and BP marshaling
+list (FILTER SST_TESTS EXCLUDE REGEX "2x1ZeroData.*BP")
 
 foreach(test ${SST_TESTS})
     add_common_test(${test} SST)
@@ -187,6 +189,8 @@ if(ADIOS2_HAVE_MPI)
     list (FILTER INSITU_TESTS EXCLUDE REGEX "x1.Shared")
     # Fortran Destination doesn't work for InSitu
     list (FILTER INSITU_TESTS EXCLUDE REGEX "toF")
+    # Zero size Data doesn't work for InSitu
+    list (FILTER INSITU_TESTS EXCLUDE REGEX "ZeroData")
     # DelayedReader doesn't make sense for InSitu
     list (FILTER INSITU_TESTS EXCLUDE REGEX "DelayedReader.*")
     # Fortran scalar reads don't work for InSitu
@@ -197,7 +201,7 @@ if(ADIOS2_HAVE_MPI)
 endif()
 
 #
-#   Setup tests for BP engine
+#   Setup tests for BP engines
 #
 if(NOT MSVC)    # not on windows
     # Local Vars don't work for InSitu
@@ -209,6 +213,36 @@ if(NOT MSVC)    # not on windows
     foreach(test ${BP_TESTS})
         add_common_test(${test} BP3)
         add_common_test(${test} BP4)
+    endforeach()
+endif()
+
+#
+#   Setup streaming tests for BP4 engine
+#
+if(NOT MSVC)    # not on windows
+    # BP4 streaming tests start with all the simple tests, but with a timeout added on open
+    LIST (APPEND BP4_STREAM_TESTS ${ALL_SIMPLE_TESTS} ${SPECIAL_TESTS})
+    MutateTestSet( BP4_STREAM_TESTS "BPS" reader "OpenTimeoutSecs=10" "${BP4_STREAM_TESTS}")
+    # SharedVars fail with BP4_streaming*
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*SharedVar.BPS$")
+    # Discard not a feature of BP4
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*DiscardWriter.BPS$")
+    # PreciousTimestep not a feature of BP4
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*Precious.*BPS$")
+    # Timeout on Reader BeginStep failing in BP4
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*TimeoutReader.BPS$")
+    # LatestTimestep not a feature of BP4
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*LatestReader.*BPS$")
+    # KillWriter fails with BP4
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*KillWriter.*BPS$")
+    # SharedVars fail with BP4_streaming*
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*SharedVar.BPS$")
+    # Local fail with BP4_streaming*
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX ".*Local.BPS$")
+    # Fortran scalar reads don't work for BP4 streaming
+    list (FILTER BP4_STREAM_TESTS EXCLUDE REGEX "(FtoF|CtoF).*")
+    foreach(test ${BP4_STREAM_TESTS})
+        add_common_test(${test} BP4_stream)
     endforeach()
 endif()
 

@@ -12,7 +12,11 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
     "separate from the source directory")
 endif()
 
-project(ADIOS2 VERSION 2.4.0)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/ADIOSFunctions.cmake)
+
+setup_version(2.4.0)
+
+project(ADIOS2 VERSION ${ADIOS2_VERSION})
 if(POLICY CMP0074)
   cmake_policy(SET CMP0074 NEW)
 endif()
@@ -63,7 +67,6 @@ add_subdirectory(cmake/install/pre)
 #------------------------------------------------------------------------------#
 # Top level options
 #------------------------------------------------------------------------------#
-include(ADIOSFunctions)
 
 # Default to a debug build if not specified
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -113,6 +116,7 @@ adios_option(MGARD     "Enable support for MGARD transforms" AUTO)
 adios_option(PNG       "Enable support for PNG transforms" AUTO)
 adios_option(MPI       "Enable support for MPI" AUTO)
 adios_option(DataMan   "Enable support for DataMan" AUTO)
+adios_option(DataSpaces "Enable support for DATASPACES" AUTO)
 adios_option(SSC       "Enable support for SSC" AUTO)
 adios_option(SST       "Enable support for SST" AUTO)
 adios_option(ZeroMQ    "Enable support for ZeroMQ" AUTO)
@@ -135,7 +139,7 @@ if(ADIOS2_HAVE_MPI)
 endif()
 
 set(ADIOS2_CONFIG_OPTS
-    Blosc BZip2 ZFP SZ MGARD PNG MPI DataMan SSC SST ZeroMQ HDF5 Python Fortran SysVShMem Profiling Endian_Reverse
+    Blosc BZip2 ZFP SZ MGARD PNG MPI DataMan SSC SST DataSpaces ZeroMQ HDF5 Python Fortran SysVShMem Profiling Endian_Reverse
 )
 GenerateADIOSHeaderConfig(${ADIOS2_CONFIG_OPTS})
 configure_file(

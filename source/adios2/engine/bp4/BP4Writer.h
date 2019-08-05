@@ -52,6 +52,9 @@ private:
     /** Manage BP data files Transports from IO AddTransport */
     transportman::TransportMan m_FileDataManager;
 
+    /** future returned by m_FileDataManager at OpenFiles */
+    std::future<void> m_FutureOpenFiles;
+
     /** Manages the optional collective metadata files */
     transportman::TransportMan m_FileMetadataManager;
 
@@ -97,10 +100,10 @@ private:
     void UpdateActiveFlag(const bool active);
 
     void PopulateMetadataIndexFileContent(
-        BufferSTL &buffer, const uint64_t currentStep, const uint64_t mpirank,
-        const uint64_t pgIndexStart, const uint64_t variablesIndexStart,
-        const uint64_t attributesIndexStart, const uint64_t currentStepEndPos,
-        const uint64_t currentTimeStamp);
+        format::BufferSTL &buffer, const uint64_t currentStep,
+        const uint64_t mpirank, const uint64_t pgIndexStart,
+        const uint64_t variablesIndexStart, const uint64_t attributesIndexStart,
+        const uint64_t currentStepEndPos, const uint64_t currentTimeStamp);
 
     void WriteCollectiveMetadataFile(const bool isFinal = false);
 

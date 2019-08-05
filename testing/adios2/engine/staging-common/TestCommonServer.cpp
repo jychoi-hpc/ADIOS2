@@ -41,8 +41,6 @@ TEST_F(CommonServerTest, ADIOS2CommonServer)
 {
     int mpiRank = 0, mpiSize = 1;
 
-    // Number of steps
-
     std::remove(shutdown_name.c_str());
 #ifdef ADIOS2_HAVE_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
@@ -101,7 +99,7 @@ TEST_F(CommonServerTest, ADIOS2CommonServer)
     while ((std::time(NULL) < EndTime) && !GlobalCloseNow)
     {
         // Generate test data for each process uniquely
-        generateCommonTestData((int)step, mpiRank, mpiSize);
+        generateCommonTestData((int)step, mpiRank, mpiSize, (int)Nx, (int)Nx);
 
         engine.BeginStep();
         // Retrieve the variables that previously went out of scope
@@ -110,7 +108,6 @@ TEST_F(CommonServerTest, ADIOS2CommonServer)
         auto var_i16 = io.InquireVariable<int16_t>("i16");
         auto var_i32 = io.InquireVariable<int32_t>("i32");
         auto var_i64 = io.InquireVariable<int64_t>("i64");
-        auto var_u8 = io.InquireVariable<uint8_t>("u8");
         auto var_r32 = io.InquireVariable<float>("r32");
         auto var_r64 = io.InquireVariable<double>("r64");
         auto var_c32 = io.InquireVariable<std::complex<float>>("c32");
@@ -186,7 +183,7 @@ int main(int argc, char **argv)
     MPI_Init(nullptr, nullptr);
 #endif
 
-    int result, bare_args = 0;
+    int result;
     ::testing::InitGoogleTest(&argc, argv);
 
     ParseArgs(argc, argv);
