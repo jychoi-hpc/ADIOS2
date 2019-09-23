@@ -24,6 +24,9 @@ namespace core
 {
 namespace compress
 {
+static int step = 0;
+static int rank = 0;
+static int is_first = 1;
 
 CompressMGARD::CompressMGARD(const Params &parameters, const bool debugMode)
 : Operator("mgard", parameters, debugMode)
@@ -95,9 +98,18 @@ size_t CompressMGARD::Compress(const void *dataIn, const Dims &dimensions,
     }
 
     int sizeOut = 0;
+    if (is_first) 
+    {
+        is_first = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    }
+    double t0 = MPI_Wtime();
     unsigned char *dataOutPtr =
         mgard_compress(mgardType, const_cast<void *>(dataIn), &sizeOut, r[0],
                        r[1], r[2], &tolerance, 0);
+    double t1 = MPI_Wtime();
+    step++;
+    printf("MGARD compress rank, step, time, size: %d %d %g %ld\n", rank, step, t1-t0, sizeOut);
 
     const size_t sizeOutT = static_cast<size_t>(sizeOut);
     std::memcpy(bufferOut, dataOutPtr, sizeOutT);

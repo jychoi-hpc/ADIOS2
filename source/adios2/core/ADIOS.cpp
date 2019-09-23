@@ -267,7 +267,11 @@ Operator &ADIOS::DefineOperator(const std::string name, const std::string type,
                                         "call to DefineOperator\n");
         }
 
+        printf("Ok #1\n");
         Operator &op = *m_Operators.end()->second;
+        /*
+        // jyc: got error
+        std::cout << "op.m_Type: " << op.m_Type << std::endl;
         if (m_DebugMode)
         {
             if (op.m_Type == "z-checker")
@@ -277,6 +281,7 @@ Operator &ADIOS::DefineOperator(const std::string name, const std::string type,
                     "call to DefineOperator\n");
             }
         }
+        */
 
         auto itPair = m_Operators.emplace(
             name, std::make_shared<compress::CompressZChecker>(

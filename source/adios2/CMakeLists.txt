@@ -190,6 +190,11 @@ if(ADIOS2_HAVE_MGARD)
   target_link_libraries(adios2 PRIVATE MGARD::MGARD)
 endif()
 
+if(ADIOS2_HAVE_ZCHECKER)
+  target_sources(adios2 PRIVATE operator/compress/CompressZChecker.cpp)
+  target_link_libraries(adios2 PRIVATE ZCHECKER::ZCHECKER)
+endif()
+
 if(ADIOS2_HAVE_PNG)
   target_sources(adios2 PRIVATE operator/compress/CompressPNG.cpp)
   target_link_libraries(adios2 PRIVATE PNG::PNG)

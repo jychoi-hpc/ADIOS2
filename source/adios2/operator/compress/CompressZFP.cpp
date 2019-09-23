@@ -18,6 +18,9 @@ namespace core
 {
 namespace compress
 {
+static int step = 0;
+static int rank = 0;
+static int is_first = 1;
 
 CompressZFP::CompressZFP(const Params &parameters, const bool debugMode)
 : Operator("zfp", parameters, debugMode)
@@ -50,7 +53,16 @@ size_t CompressZFP::Compress(const void *dataIn, const Dims &dimensions,
     zfp_stream_set_bit_stream(stream, bitstream);
     zfp_stream_rewind(stream);
 
+    if (is_first) 
+    {
+        is_first = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    }
+    double t0 = MPI_Wtime();
     size_t sizeOut = zfp_compress(stream, field);
+    double t1 = MPI_Wtime();
+    step++;
+    printf("ZFP compress rank, step, time, size: %d %d %g %ld\n", rank, step, t1-t0, sizeOut);
 
     if (m_DebugMode == true)
     {

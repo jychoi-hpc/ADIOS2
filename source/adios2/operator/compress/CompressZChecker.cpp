@@ -21,6 +21,7 @@ CompressZChecker::CompressZChecker(const Params &parameters,
                                    const bool debugMode, Operator &op)
 : Operator("z-checker", parameters, debugMode), m_Operator(op)
 {
+    printf("z-checker ... CompressZChecker\n");
 }
 
 size_t CompressZChecker::Compress(const void *dataIn, const Dims &dimensions,
@@ -29,6 +30,8 @@ size_t CompressZChecker::Compress(const void *dataIn, const Dims &dimensions,
                                   const Params &parameters, Params &info) const
 {
     // Init Z-Checker parameters (maybe a separate function) similar as in SZ
+
+    printf("z-checker ... Compress\n");
 
     bool isFinished = false;
     while (isFinished == false)

@@ -26,6 +26,9 @@ namespace core
 {
 namespace compress
 {
+static int step = 0;
+static int rank = 0;
+static int is_first = 1;
 
 CompressSZ::CompressSZ(const Params &parameters, const bool debugMode)
 : Operator("sz", parameters, debugMode)
@@ -289,8 +292,17 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
          */
     }
 
+    if (is_first) 
+    {
+        is_first = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    }
+    double t0 = MPI_Wtime();
     const unsigned char *bytes = SZ_compress(dtype, (void *)dataIn, &outsize,
                                              r[4], r[3], r[2], r[1], r[0]);
+    double t1 = MPI_Wtime();
+    step++;
+    printf("SZ compress rank, step, time, size: %d %d %g %ld\n", rank, step, t1-t0, outsize);
     std::memcpy(bufferOut, bytes, outsize);
     return static_cast<size_t>(outsize);
 }
