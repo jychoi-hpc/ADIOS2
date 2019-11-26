@@ -18,23 +18,30 @@ extern "C" {
 #include <sz.h>
 }
 
-#ifdef HAVE_ZCHECKER
-#warning have zchecker
-#  ifndef _NOMPI
-#    warning mpi version
-#    define USE_ZCHECKER 1
-#  else
-#    warning non-mpi version
-#    undef USE_ZCHECKER
-#  endif
+#ifdef ADIOS2_HAVE_ZCHECKER
+#define USE_ZCHECKER 1
 #endif
 
 #ifdef USE_ZCHECKER
+extern "C" {
 #include <ZC_rw.h>
 #include <zc.h>
+}
+static char *zc_configfile = "zc.config";
 #endif
 
+#include <sys/stat.h>
+static int check_file(const char* filename){
+    struct stat buffer;
+    int exist = stat(filename,&buffer);
+    if(exist == 0)
+        return 1;
+    else // -1
+        return 0;
+}
+
 #include "adios2/helper/adiosFunctions.h"
+#include <mpi.h>
 
 namespace adios2
 {
@@ -273,7 +280,7 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
     }
 
     // Get type info
-    int dtype;
+    int dtype = -1;
     if (varType == helper::GetType<double>())
     {
         dtype = SZ_DOUBLE;
@@ -296,7 +303,7 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
     // r[0] is the fastest changing dimension and r[4] is the lowest changing
     // dimension
     // In C, r[0] is the last dimension. In Fortran, r[0] is the first dimension
-    for (int i = 0; i < ndims; i++)
+    for (size_t i = 0; i < ndims; i++)
     {
         r[ndims - i - 1] = dimensions[i];
         /*
@@ -309,7 +316,7 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
     }
 
 #ifdef USE_ZCHECKER
-    log_debug("%s: %s\n", "Z-checker", "Enabled");
+    printf("%s: %s\n", "Z-checker", "Enabled");
     ZC_DataProperty* dataProperty = NULL;
     ZC_CompareData* compareResult = NULL;
 #endif
@@ -327,11 +334,11 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
         {
             ZC_Init(zc_configfile);
             //ZC_DataProperty* ZC_startCmpr(char* varName, int dataType, void* oriData, size_t r5, size_t r4, size_t r3, size_t r2, size_t r1);
-            dataProperty = ZC_startCmpr(var->name, dtype, (void *)dataIn, r[4], r[3], r[2], r[1], r[0]);
+            dataProperty = ZC_startCmpr("var1", dtype, (void *)dataIn, r[4], r[3], r[2], r[1], r[0]);
         }
         else
         {
-            log_warn("Failed to access Z-Check config file (%s). Disabled. \n", zc_configfile);
+            printf("Failed to access Z-Check config file (%s). Disabled. \n", zc_configfile);
             use_zchecker = 0;
         }
     }
@@ -350,17 +357,17 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
     if (use_zchecker)
     {
         //ZC_CompareData* ZC_endCmpr(ZC_DataProperty* dataProperty, int cmprSize);
-        compareResult = ZC_endCmpr(dataProperty, (int)outsize);
+        compareResult = ZC_endCmpr(dataProperty, "solution", (int)outsize);
         // For entropy
-        ZC_DataProperty* property = ZC_genProperties(var->name, dtype, (void *) input_buff, r[4], r[3], r[2], r[1], r[0]);
+        ZC_DataProperty* property = ZC_genProperties("var1", dtype, (void *)dataIn, r[4], r[3], r[2], r[1], r[0]);
         dataProperty->entropy = property->entropy;
         freeDataProperty(property);
 
         ZC_startDec();
-        void *hat = SZ_decompress(dtype, bytes, outsize, r[4], r[3], r[2], r[1], r[0]);
-        ZC_endDec(compareResult, "SZ", hat);
+        void *hat = SZ_decompress(dtype, (unsigned char*)bytes, outsize, r[4], r[3], r[2], r[1], r[0]);
+        ZC_endDec(compareResult, hat);
         free(hat);
-        log_debug("Z-Checker done.\n");
+        printf("Z-Checker done.\n");
     }
 #endif
 
@@ -402,7 +409,7 @@ size_t CompressSZ::Decompress(const void *bufferIn, const size_t sizeIn,
     // In C, r[0] is the last dimension. In Fortran, r[0] is the first dimension
     std::vector<size_t> rs(5, 0);
     const size_t ndims = dimensions.size();
-    for (auto i = 0; i < ndims; ++i)
+    for (size_t i = 0; i < ndims; ++i)
     {
         rs[ndims - i - 1] = dimensions[i];
     }

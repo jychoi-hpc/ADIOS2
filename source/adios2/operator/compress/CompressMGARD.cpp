@@ -70,14 +70,14 @@ size_t CompressMGARD::Compress(const void *dataIn, const Dims &dimensions,
     r[1] = 0;
     r[2] = 0;
 
-    for (auto i = 0; i < ndims; i++)
+    for (size_t i = 0; i < ndims; i++)
     {
         r[ndims - i - 1] = static_cast<int>(dimensions[i]);
     }
 
     // Parameters
     bool hasTolerance = false;
-    double tolerance;
+    double tolerance, s = 0.0;
     auto itAccuracy = parameters.find("accuracy");
     if (itAccuracy != parameters.end())
     {
@@ -96,18 +96,24 @@ size_t CompressMGARD::Compress(const void *dataIn, const Dims &dimensions,
                                     "tolerance for MGARD compression "
                                     "operator\n");
     }
+    auto itSParameter = parameters.find("s");
+    if (itSParameter != parameters.end())
+    {
+        s = std::stod(itSParameter->second);
+    }
 
     int sizeOut = 0;
     if (is_first) 
     {
         is_first = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        //MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     }
-    double t0 = MPI_Wtime();
+    double t0, t1;
+    //double t0 = MPI_Wtime();
     unsigned char *dataOutPtr =
         mgard_compress(mgardType, const_cast<void *>(dataIn), &sizeOut, r[0],
                        r[1], r[2], &tolerance, 0);
-    double t1 = MPI_Wtime();
+    //double t1 = MPI_Wtime();
     step++;
     printf("MGARD compress rank, step, time, size: %d %d %g %ld\n", rank, step, t1-t0, sizeOut);
 
@@ -124,6 +130,7 @@ size_t CompressMGARD::Decompress(const void *bufferIn, const size_t sizeIn,
 {
     int mgardType = -1;
     size_t elementSize = 0;
+    double quantizer = 0.0;
 
     if (type == helper::GetType<double>())
     {
@@ -146,13 +153,13 @@ size_t CompressMGARD::Decompress(const void *bufferIn, const size_t sizeIn,
     r[1] = 0;
     r[2] = 0;
 
-    for (auto i = 0; i < ndims; i++)
+    for (size_t i = 0; i < ndims; i++)
     {
         r[ndims - i - 1] = static_cast<int>(dimensions[i]);
     }
 
     void *dataPtr = mgard_decompress(
-        mgardType,
+        mgardType, 
         reinterpret_cast<unsigned char *>(const_cast<void *>(bufferIn)),
         static_cast<int>(sizeIn), r[0], r[1], r[2], 0);
 

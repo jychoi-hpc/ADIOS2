@@ -11,6 +11,7 @@
 #include "CompressZFP.h"
 
 #include "adios2/helper/adiosFunctions.h"
+#include <mpi.h>
 
 namespace adios2
 {
