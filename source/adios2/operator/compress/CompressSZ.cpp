@@ -18,6 +18,22 @@ extern "C" {
 #include <sz.h>
 }
 
+#ifdef HAVE_ZCHECKER
+#warning have zchecker
+#  ifndef _NOMPI
+#    warning mpi version
+#    define USE_ZCHECKER 1
+#  else
+#    warning non-mpi version
+#    undef USE_ZCHECKER
+#  endif
+#endif
+
+#ifdef USE_ZCHECKER
+#include <ZC_rw.h>
+#include <zc.h>
+#endif
+
 #include "adios2/helper/adiosFunctions.h"
 
 namespace adios2
@@ -292,11 +308,35 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
          */
     }
 
+#ifdef USE_ZCHECKER
+    log_debug("%s: %s\n", "Z-checker", "Enabled");
+    ZC_DataProperty* dataProperty = NULL;
+    ZC_CompareData* compareResult = NULL;
+#endif
+
     if (is_first) 
     {
         is_first = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     }
+
+#ifdef USE_ZCHECKER
+    if (use_zchecker)
+    {
+        if (check_file(zc_configfile))
+        {
+            ZC_Init(zc_configfile);
+            //ZC_DataProperty* ZC_startCmpr(char* varName, int dataType, void* oriData, size_t r5, size_t r4, size_t r3, size_t r2, size_t r1);
+            dataProperty = ZC_startCmpr(var->name, dtype, (void *)dataIn, r[4], r[3], r[2], r[1], r[0]);
+        }
+        else
+        {
+            log_warn("Failed to access Z-Check config file (%s). Disabled. \n", zc_configfile);
+            use_zchecker = 0;
+        }
+    }
+#endif
+
     double t0 = MPI_Wtime();
     const unsigned char *bytes = SZ_compress(dtype, (void *)dataIn, &outsize,
                                              r[4], r[3], r[2], r[1], r[0]);
@@ -304,6 +344,26 @@ size_t CompressSZ::Compress(const void *dataIn, const Dims &dimensions,
     step++;
     printf("SZ compress rank, step, time, size: %d %d %g %ld\n", rank, step, t1-t0, outsize);
     std::memcpy(bufferOut, bytes, outsize);
+
+#ifdef USE_ZCHECKER
+    // Have to do this after setting buffer size for adios
+    if (use_zchecker)
+    {
+        //ZC_CompareData* ZC_endCmpr(ZC_DataProperty* dataProperty, int cmprSize);
+        compareResult = ZC_endCmpr(dataProperty, (int)outsize);
+        // For entropy
+        ZC_DataProperty* property = ZC_genProperties(var->name, dtype, (void *) input_buff, r[4], r[3], r[2], r[1], r[0]);
+        dataProperty->entropy = property->entropy;
+        freeDataProperty(property);
+
+        ZC_startDec();
+        void *hat = SZ_decompress(dtype, bytes, outsize, r[4], r[3], r[2], r[1], r[0]);
+        ZC_endDec(compareResult, "SZ", hat);
+        free(hat);
+        log_debug("Z-Checker done.\n");
+    }
+#endif
+
     return static_cast<size_t>(outsize);
 }
 
